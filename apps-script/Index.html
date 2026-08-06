@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background: #f4f6f8; color: #222; }
+  .vista { max-width: 480px; margin: 0 auto; padding: 16px; }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  h1 { font-size: 1.3em; color: #2a6f4e; }
+  h3 { margin-bottom: 6px; }
+  nav { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  nav button { flex: 1; min-width: 90px; }
+  button { padding: 10px 12px; border: 0; border-radius: 8px; background: #2a6f4e; color: #fff; font-size: .95em; cursor: pointer; }
+  button.secondario { background: #e3e8ee; color: #222; }
+  button.attivo { outline: 3px solid #9ecfb8; }
+  input, select, textarea { width: 100%; padding: 10px; margin: 4px 0 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 1em; background: #fff; }
+  .card { background: #fff; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .riga { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .mini { font-size: .8em; color: #777; }
+  .err { color: #b00020; margin-top: 8px; }
+  .ok { color: #2a6f4e; margin-top: 8px; }
+  img.foto { width: 100%; border-radius: 8px; margin-top: 6px; }
+  .nascosto { display: none; }
+</style>
+</head>
+<body>
+
+<div id="vista-login" class="vista">
+  <h1>Diario Nido</h1>
+  <div class="card">
+    <p>Inserisci il codice personale che ti ha consegnato la scuola.</p>
+    <input id="codice-input" placeholder="Codice personale">
+    <button onclick="accedi()">Entra</button>
+    <p id="login-msg" class="err"></p>
+  </div>
+</div>
+
+<div id="vista-app" class="vista nascosto">
+  <header>
+    <h1>Diario Nido</h1>
+    <button class="secondario" onclick="esci()">Esci</button>
+  </header>
+  <p id="benvenuto" class="mini"></p>
+  <nav id="tabs"></nav>
+  <main id="contenuto"></main>
+  <p id="app-msg"></p>
+</div>
+
+<script>
+var CTX = null;
+
+function codice() { return localStorage.getItem('dn_codice') || ''; }
+function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+function msg(t, errore) { var el = document.getElementById('app-msg'); el.textContent = t || ''; el.className = errore ? 'err' : 'ok'; }
+
+function api(nome, argomenti, poi) {
+  msg('');
+  google.script.run
+    .withSuccessHandler(poi || function (r) { if (typeof r === 'string') msg(r); })
+    .withFailureHandler(function (e) { msg(e.message, true); })
+    [nome].apply(null, [codice()].concat(argomenti || []));
+}
+
+function accedi() {
+  var c = document.getElementById('codice-input').value.trim();
+  google.script.run.withSuccessHandler(function (ctx) {
+    localStorage.setItem('dn_codice', c);
+    avvia(ctx);
+  }).withFailureHandler(function (e) {
+    document.getElementById('login-msg').textContent = e.message;
+  }).getContesto(c);
+}
+
+function esci() { localStorage.removeItem('dn_codice'); location.reload(); }
+
+window.onload = function () {
+  if (!codice()) return;
+  google.script.run.withSuccessHandler(avvia).withFailureHandler(function () { esci(); }).getContesto(codice());
+};
+
+function avvia(ctx) {
+  CTX = ctx;
+  document.getElementById('vista-login').classList.add('nascosto');
+  document.getElementById('vista-app').classList.remove('nascosto');
+  document.getElementById('benvenuto').textContent = 'Ciao ' + ctx.nome + ' (' + ctx.ruolo + ')';
+  var tabs = { genitore: ['Diario', 'Messaggi'], educatore: ['Presenze', 'Attivit\u00e0', 'Foto', 'Avvisi', 'Messaggi'], admin: ['Presenze', 'Attivit\u00e0', 'Foto', 'Avvisi', 'Messaggi', 'Gestione'] };
+  var nav = document.getElementById('tabs');
+  nav.innerHTML = '';
+  (tabs[ctx.ruolo] || []).forEach(function (t, i) {
+    var b = document.createElement('button');
+    b.textContent = t;
+    b.onclick = function () { mostra(t); };
+    nav.appendChild(b);
+    if (i === 0) mostra(t);
+  });
+}
+
+function mostra(tab) {
+  var v = { 'Diario': vistaDiario, 'Presenze': vistaPresenze, 'Attivit\u00e0': vistaAttivita, 'Foto': vistaFoto, 'Avvisi': vistaAvvisi, 'Messaggi': vistaMessaggi, 'Gestione': vistaGestione };
+  (v[tab] || function () {})();
+}
+
+function main() { return document.getElementById('contenuto'); }
+
+function selettoreBambini(id) {
+  return '<select id="' + id + '">' + CTX.bambini.map(function (b) {
+    return '<option value="' + esc(b.ID) + '">' + esc(b.Nome) + '</option>';
+  }).join('') + '</select>';
+}
+
+/* ---------- Genitore: diario ---------- */
+
+function vistaDiario() {
+  if (!CTX.bambini.length) { main().innerHTML = '<div class="card">Nessun bambino associato al tuo account: contatta la scuola.</div>'; return; }
+  main().innerHTML = '<div class="card">' + selettoreBambini('sel-diario') + '<button onclick="caricaFeed()">Aggiorna</button></div><div id="feed"></div>';
+  caricaFeed();
+}
+
+function caricaFeed() {
+  var id = document.getElementById('sel-diario').value;
+  api('getFeed', [id], function (f) {
+    var h = '';
+    h += '<div class="card"><h3>Oggi</h3>' + (f.presenzaOggi
+      ? 'Entrata: <b>' + esc(f.presenzaOggi.OraEntrata) + '</b>' + (f.presenzaOggi.OraUscita ? ' — Uscita: <b>' + esc(f.presenzaOggi.OraUscita) + '</b>' : ' (presente ora)')
+      : 'Nessuna presenza registrata oggi.') + '</div>';
+    if (f.avvisi.length) {
+      h += '<div class="card"><h3>Avvisi</h3>' + f.avvisi.map(function (a) {
+        return '<p><b>' + esc(a.Titolo) + '</b><br>' + esc(a.Testo) + '<br><span class="mini">' + esc(a.Timestamp) + ' — ' + esc(a.Autore) + '</span></p>';
+      }).join('<hr>') + '</div>';
+    }
+    h += '<div class="card"><h3>Attivit\u00e0 (ultimi 7 giorni)</h3>' + (f.attivita.length ? f.attivita.map(function (a) {
+      return '<p><b>' + esc(a.Tipo) + '</b> ' + esc(a.Descrizione) + '<br><span class="mini">' + esc(a.Timestamp) + ' — ' + esc(a.Educatore) + '</span></p>';
+    }).join('') : 'Nessuna attivit\u00e0 registrata.') + '</div>';
+    h += '<div class="card"><h3>Foto</h3>' + (f.foto.length ? f.foto.map(function (fo) {
+      return '<div><span class="mini">' + esc(fo.Timestamp) + ' ' + esc(fo.Didascalia) + '</span><img class="foto" id="img-' + esc(fo.FileID) + '" alt="foto"></div>';
+    }).join('') : 'Nessuna foto negli ultimi 7 giorni.') + '</div>';
+    document.getElementById('feed').innerHTML = h;
+    f.foto.forEach(function (fo) {
+      api('getFotoBase64', [fo.FileID], function (data) {
+        var img = document.getElementById('img-' + fo.FileID);
+        if (img) img.src = data;
+      });
+    });
+  });
+}
+
+/* ---------- Educatore: presenze ---------- */
+
+function vistaPresenze() {
+  main().innerHTML = '<div class="card"><h3>Presenze di oggi</h3><div id="lista-presenze">Caricamento…</div></div>';
+  api('getPresenzeOggi', [], function (presenze) {
+    var perBambino = {};
+    presenze.forEach(function (p) { perBambino[String(p.BambinoID)] = p; });
+    document.getElementById('lista-presenze').innerHTML = CTX.bambini.map(function (b) {
+      var p = perBambino[String(b.ID)];
+      var stato = p ? (p.OraUscita ? 'Uscito ' + esc(p.OraUscita) : 'Presente da ' + esc(p.OraEntrata)) : 'Assente';
+      return '<div class="riga"><span><b>' + esc(b.Nome) + '</b> <span class="mini">' + stato + '</span></span><span>' +
+        '<button onclick="presenza(\'' + esc(b.ID) + '\',\'entrata\')">Entrata</button> ' +
+        '<button class="secondario" onclick="presenza(\'' + esc(b.ID) + '\',\'uscita\')">Uscita</button></span></div>';
+    }).join('');
+  });
+}
+
+function presenza(id, tipo) { api('registraPresenza', [id, tipo], function (r) { msg(r); vistaPresenze(); }); }
+
+/* ---------- Educatore: attivit\u00e0 ---------- */
+
+function vistaAttivita() {
+  var tipi = ['Pasto', 'Nanna', 'Cambio', 'Gioco', 'Nota'];
+  main().innerHTML = '<div class="card"><h3>Registra attivit\u00e0</h3>' + selettoreBambini('sel-att') +
+    '<div class="riga">' + tipi.map(function (t) {
+      return '<button class="secondario" id="tipo-' + t + '" onclick="scegliTipo(\'' + t + '\')">' + t + '</button>';
+    }).join('') + '</div>' +
+    '<input type="hidden" id="tipo-scelto" value="Nota">' +
+    '<textarea id="att-desc" rows="2" placeholder="Descrizione (es. Ha mangiato tutto)"></textarea>' +
+    '<button onclick="salvaAttivita()">Salva</button></div>';
+  scegliTipo('Nota');
+}
+
+function scegliTipo(t) {
+  document.getElementById('tipo-scelto').value = t;
+  ['Pasto', 'Nanna', 'Cambio', 'Gioco', 'Nota'].forEach(function (x) {
+    document.getElementById('tipo-' + x).classList.toggle('attivo', x === t);
+  });
+}
+
+function salvaAttivita() {
+  api('registraAttivita', [document.getElementById('sel-att').value, document.getElementById('tipo-scelto').value, document.getElementById('att-desc').value], function (r) {
+    msg(r);
+    document.getElementById('att-desc').value = '';
+  });
+}
+
+/* ---------- Educatore: foto ---------- */
+
+function vistaFoto() {
+  main().innerHTML = '<div class="card"><h3>Carica foto</h3>' + selettoreBambini('sel-foto') +
+    '<input type="file" id="file-foto" accept="image/*">' +
+    '<input id="foto-did" placeholder="Didascalia (facoltativa)">' +
+    '<button onclick="inviaFoto()">Carica</button>' +
+    '<p class="mini">La foto sar\u00e0 visibile solo ai genitori del bambino selezionato. Serve il consenso foto.</p></div>';
+}
+
+function inviaFoto() {
+  var f = document.getElementById('file-foto').files[0];
+  if (!f) { msg('Scegli una foto.', true); return; }
+  var lettore = new FileReader();
+  lettore.onload = function (e) {
+    var base64 = e.target.result.split(',')[1];
+    msg('Caricamento in corso…');
+    api('caricaFoto', [document.getElementById('sel-foto').value, base64, f.type, f.name, document.getElementById('foto-did').value], function (r) {
+      msg(r);
+      document.getElementById('file-foto').value = '';
+      document.getElementById('foto-did').value = '';
+    });
+  };
+  lettore.readAsDataURL(f);
+}
+
+/* ---------- Avvisi ---------- */
+
+function vistaAvvisi() {
+  var opzioni = '<option value="tutti">Tutti</option>' + CTX.sezioni.map(function (s) {
+    return '<option value="sezione:' + esc(s.ID) + '">Sezione ' + esc(s.Nome) + '</option>';
+  }).join('');
+  main().innerHTML = '<div class="card"><h3>Nuovo avviso</h3>' +
+    '<input id="avv-titolo" placeholder="Titolo">' +
+    '<textarea id="avv-testo" rows="3" placeholder="Testo dell\'avviso"></textarea>' +
+    '<select id="avv-dest">' + opzioni + '</select>' +
+    '<button onclick="pubblicaAvviso()">Pubblica</button></div>';
+}
+
+function pubblicaAvviso() {
+  api('inviaAvviso', [document.getElementById('avv-titolo').value, document.getElementById('avv-testo').value, document.getElementById('avv-dest').value], function (r) {
+    msg(r);
+    document.getElementById('avv-titolo').value = '';
+    document.getElementById('avv-testo').value = '';
+  });
+}
+
+/* ---------- Messaggi ---------- */
+
+function vistaMessaggi() {
+  main().innerHTML = '<div class="card"><h3>Nuovo messaggio</h3><select id="msg-a"></select>' +
+    '<textarea id="msg-testo" rows="2" placeholder="Scrivi un messaggio"></textarea>' +
+    '<button onclick="inviaMsg()">Invia</button></div><div class="card"><h3>Conversazioni</h3><div id="lista-msg">Caricamento…</div></div>';
+  api('getContatti', [], function (contatti) {
+    document.getElementById('msg-a').innerHTML = contatti.map(function (c) {
+      return '<option value="' + esc(c.Email) + '">' + esc(c.Nome) + ' (' + esc(c.Ruolo) + ')</option>';
+    }).join('');
+  });
+  caricaMessaggi();
+}
+
+function caricaMessaggi() {
+  api('getMessaggi', [], function (lista) {
+    document.getElementById('lista-msg').innerHTML = lista.length ? lista.slice().reverse().map(function (m) {
+      var mio = m.Da.toLowerCase() === CTX.email.toLowerCase();
+      var lettura = mio ? (m.LettoIl ? 'Letto il ' + esc(m.LettoIl) : 'Non ancora letto') : 'Da: ' + esc(m.Da);
+      return '<p>' + (mio ? '<b>Tu \u2192 ' + esc(m.A) + '</b>' : '<b>' + esc(m.Da) + '</b>') + '<br>' + esc(m.Testo) +
+        '<br><span class="mini">' + esc(m.Timestamp) + ' \u00b7 ' + lettura + '</span></p>';
+    }).join('<hr>') : 'Nessun messaggio.';
+  });
+}
+
+function inviaMsg() {
+  api('inviaMessaggio', [document.getElementById('msg-a').value, document.getElementById('msg-testo').value], function (r) {
+    msg(r);
+    document.getElementById('msg-testo').value = '';
+    caricaMessaggi();
+  });
+}
+
+/* ---------- Admin: gestione ---------- */
+
+function vistaGestione() {
+  var opzSezioni = CTX.sezioni.map(function (s) { return '<option value="' + esc(s.ID) + '">' + esc(s.Nome) + '</option>'; }).join('');
+  main().innerHTML =
+    '<div class="card"><h3>Nuova sezione</h3><input id="g-sez" placeholder="Nome sezione (es. Girasoli)"><button onclick="api(\'aggiungiSezione\',[val(\'g-sez\')],dopoGestione)">Crea</button></div>' +
+    '<div class="card"><h3>Nuovo bambino</h3><input id="g-b-nome" placeholder="Nome e cognome"><input id="g-b-nascita" placeholder="Data di nascita (es. 2023-05-10)"><select id="g-b-sez">' + opzSezioni + '</select>' +
+    '<label><input type="checkbox" id="g-b-consenso" style="width:auto"> Consenso foto firmato</label><br><br>' +
+    '<button onclick="api(\'aggiungiBambino\',[val(\'g-b-nome\'),val(\'g-b-nascita\'),val(\'g-b-sez\'),document.getElementById(\'g-b-consenso\').checked],dopoGestione)">Aggiungi</button></div>' +
+    '<div class="card"><h3>Nuovo utente</h3><input id="g-u-email" placeholder="Email"><input id="g-u-nome" placeholder="Nome">' +
+    '<select id="g-u-ruolo"><option value="genitore">Genitore</option><option value="educatore">Educatore</option><option value="admin">Amministratore</option></select>' +
+    '<input id="g-u-codice" placeholder="Codice personale da assegnare">' +
+    '<button onclick="api(\'aggiungiUtente\',[val(\'g-u-email\'),val(\'g-u-nome\'),val(\'g-u-ruolo\'),val(\'g-u-codice\')],dopoGestione)">Crea utente</button></div>' +
+    '<div class="card"><h3>Associa genitore a bambino</h3>' + selettoreBambini('g-a-bambino') +
+    '<input id="g-a-email" placeholder="Email del genitore">' +
+    '<button onclick="api(\'associaGenitore\',[val(\'g-a-bambino\'),val(\'g-a-email\')],dopoGestione)">Associa</button></div>';
+}
+
+function val(id) { return document.getElementById(id).value.trim(); }
+
+function dopoGestione(r) {
+  msg(r);
+  google.script.run.withSuccessHandler(function (ctx) { CTX = ctx; }).getContesto(codice());
+}
+</script>
+</body>
+</html>
