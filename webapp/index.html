@@ -59,7 +59,7 @@ async function init(){
   if (!session) return schermataLogin();
   const { data } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
   profilo = data;
-  const staff = profilo.ruolo !== 'genitore';
+  const staff = profilo?.ruolo !== 'genitore';
   sezioni = (await sb.from('sezioni').select('*').order('nome')).data || [];
   bambini = (await sb.from('bambini').select('*').order('nome')).data || [];
   tab = staff ? 'presenze' : 'diario';
