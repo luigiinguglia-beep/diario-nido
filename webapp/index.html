@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diario Nido</title>
+<style>
+  :root { --blu:#3b6fb5; --sfondo:#f4f6fa; --card:#fff; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:var(--sfondo); color:#222; }
+  header { background:var(--blu); color:#fff; padding:12px 16px; display:flex; justify-content:space-between; align-items:center; }
+  header b { font-size:17px; }
+  header small { opacity:.85; display:block; }
+  header button { background:rgba(255,255,255,.2); border:0; color:#fff; padding:6px 10px; border-radius:8px; }
+  main { max-width:560px; margin:0 auto; padding:12px; padding-bottom:70px; }
+  .card { background:var(--card); border-radius:12px; padding:14px; margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  h3 { margin:4px 0 10px; font-size:16px; }
+  input, select, textarea, button { font-size:15px; }
+  input, select, textarea { width:100%; padding:10px; margin:4px 0 10px; border:1px solid #ccd; border-radius:8px; background:#fff; }
+  button.az { background:var(--blu); color:#fff; border:0; padding:10px 14px; border-radius:8px; width:100%; }
+  button.mini { width:auto; padding:8px 12px; margin:2px; border-radius:8px; border:1px solid #ccd; background:#fff; }
+  button.mini.on { background:#2e9e5b; color:#fff; border-color:#2e9e5b; }
+  nav { position:fixed; bottom:0; left:0; right:0; background:#fff; border-top:1px solid #ddd; display:flex; }
+  nav button { flex:1; border:0; background:none; padding:10px 2px; font-size:12px; color:#667; }
+  nav button.attivo { color:var(--blu); font-weight:700; }
+  nav button span { display:block; font-size:20px; }
+  .riga { display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #eef; gap:8px; }
+  .riga:last-child { border:0; }
+  .msg { padding:8px 12px; border-radius:12px; margin:4px 0; max-width:80%; }
+  .msg.mio { background:#d7e7ff; margin-left:auto; }
+  .msg.suo { background:#eee; }
+  .msg small { display:block; font-size:11px; color:#778; }
+  .fotoimg { width:100%; border-radius:10px; margin:6px 0; }
+  .tag { font-size:12px; background:#e8eefb; color:var(--blu); padding:2px 8px; border-radius:10px; }
+  #avviso-app { position:fixed; top:10px; left:50%; transform:translateX(-50%); background:#333; color:#fff; padding:10px 16px; border-radius:10px; display:none; z-index:99; max-width:90%; }
+  .vuoto { color:#889; text-align:center; padding:14px; }
+</style>
+</head>
+<body>
+<div id="avviso-app"></div>
+<div id="app"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script>
+const sb = supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+let profilo = null, tab = null, sezioni = [], bambini = [], contatto = null;
+
+const $ = s => document.querySelector(s);
+const esc = t => (t||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ora = ts => ts ? new Date(ts).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}) : '—';
+const oggi = () => new Date().toISOString().slice(0,10);
+const TIPI = { pasto:'🍽️ Pasto', sonno:'😴 Sonno', cambio:'🧷 Cambio', gioco:'🧸 Gioco', nota:'📝 Nota' };
+function toast(t){ const a=$('#avviso-app'); a.textContent=t; a.style.display='block'; setTimeout(()=>a.style.display='none',3500); }
+
+// ---------- AVVIO ----------
+async function init(){
+  const { data:{ session } } = await sb.auth.getSession();
+  if (!session) return schermataLogin();
+  const { data } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
+  profilo = data;
+  const staff = profilo.ruolo !== 'genitore';
+  sezioni = (await sb.from('sezioni').select('*').order('nome')).data || [];
+  bambini = (await sb.from('bambini').select('*').order('nome')).data || [];
+  tab = staff ? 'presenze' : 'diario';
+  renderApp();
+}
+
+function schermataLogin(){
+  $('#app').innerHTML = `
+  <header><b>Diario Nido</b></header>
+  <main>
+    <div class="card">
+      <h3>Accedi</h3>
+      <input id="l-email" type="email" placeholder="Email">
+      <input id="l-pass" type="password" placeholder="Password">
+      <button class="az" onclick="login()">Entra</button>
+    </div>
+    <div class="card">
+      <h3>Prima volta? Registrati</h3>
+      <input id="r-nome" placeholder="Nome e cognome">
+      <input id="r-email" type="email" placeholder="Email">
+      <input id="r-pass" type="password" placeholder="Password (min 6 caratteri)">
+      <button class="az" onclick="registra()">Crea account</button>
+      <p style="font-size:13px;color:#667">Dopo la registrazione l'amministratore ti assocerà ai tuoi bambini.</p>
+    </div>
+  </main>`;
+}
+async function login(){
+  const { error } = await sb.auth.signInWithPassword({ email:$('#l-email').value.trim(), password:$('#l-pass').value });
+  if (error) return toast('Accesso non riuscito: ' + error.message);
+  init();
+}
+async function registra(){
+  const { error } = await sb.auth.signUp({
+    email: $('#r-email').value.trim(), password: $('#r-pass').value,
+    options: { data: { nome: $('#r-nome').value.trim() } }
+  });
+  if (error) return toast('Errore: ' + error.message);
+  toast('Account creato! Se richiesto, conferma l\'email, poi accedi.');
+}
+async function logout(){ await sb.auth.signOut(); location.reload(); }
+
+// ---------- STRUTTURA ----------
+function renderApp(){
+  const staff = profilo.ruolo !== 'genitore';
+  const tabs = staff
+    ? [['presenze','✅','Presenze'],['attivita','🧸','Attività'],['fotoTab','📷','Foto'],['avvisi','📣','Avvisi'],['messaggi','💬','Messaggi']]
+    : [['diario','📖','Diario'],['avvisi','📣','Avvisi'],['messaggi','💬','Messaggi']];
+  if (profilo.ruolo === 'amministratore') tabs.push(['gestione','⚙️','Gestione']);
+  $('#app').innerHTML = `
+    <header><div><b>Diario Nido</b><small>${esc(profilo.nome)} · ${profilo.ruolo}</small></div>
+    <button onclick="logout()">Esci</button></header>
+    <main id="contenuto"></main>
+    <nav>${tabs.map(t=>`<button id="tab-${t[0]}" onclick="vai('${t[0]}')"><span>${t[1]}</span>${t[2]}</button>`).join('')}</nav>`;
+  vai(tab);
+}
+function vai(t){
+  tab = t; contatto = null;
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('attivo'));
+  const btn = $('#tab-'+t); if (btn) btn.classList.add('attivo');
+  ({presenze, attivita, fotoTab, avvisi, messaggi, diario, gestione})[t]();
+}
+const selBambino = (id='sel-bimbo', lista=bambini) =>
+  `<select id="${id}">${lista.map(b=>`<option value="${b.id}">${esc(b.nome)}</option>`).join('')}</select>`;
+
+// ---------- EDUCATORE: PRESENZE ----------
+async function presenze(){
+  const c = $('#contenuto');
+  const sez = sezioni.map(s=>`<option value="${s.id}">${esc(s.nome)}</option>`).join('');
+  c.innerHTML = `<div class="card"><h3>Presenze di oggi</h3>
+    <select id="sel-sez" onchange="presenzeLista()"><option value="">Tutte le sezioni</option>${sez}</select>
+    <div id="lista-pres"></div></div>`;
+  presenzeLista();
+}
+async function presenzeLista(){
+  const sez = $('#sel-sez').value;
+  const lista = sez ? bambini.filter(b=>b.sezione_id===sez) : bambini;
+  const { data: pres } = await sb.from('presenze').select('*').eq('giorno', oggi());
+  const byB = Object.fromEntries((pres||[]).map(p=>[p.bambino_id,p]));
+  $('#lista-pres').innerHTML = lista.length ? lista.map(b=>{
+    const p = byB[b.id];
+    return `<div class="riga"><div><b>${esc(b.nome)}</b><br>
+      <small>${p&&p.entrata?'Entrata '+ora(p.entrata):'Non presente'}${p&&p.uscita?' · Uscita '+ora(p.uscita):''}</small></div>
+      <div>
+      <button class="mini ${p&&p.entrata?'on':''}" onclick="segnaEntrata('${b.id}')">Entrata</button>
+      <button class="mini ${p&&p.uscita?'on':''}" onclick="segnaUscita('${b.id}')">Uscita</button>
+      </div></div>`;
+  }).join('') : '<div class="vuoto">Nessun bambino in questa sezione.</div>';
+}
+async function segnaEntrata(bid){
+  const { error } = await sb.from('presenze').upsert(
+    { bambino_id:bid, giorno:oggi(), entrata:new Date().toISOString(), registrata_da:profilo.id },
+    { onConflict:'bambino_id,giorno' });
+  error ? toast(error.message) : presenzeLista();
+}
+async function segnaUscita(bid){
+  const { error } = await sb.from('presenze').update({ uscita:new Date().toISOString() })
+    .eq('bambino_id',bid).eq('giorno',oggi());
+  error ? toast(error.message) : presenzeLista();
+}
+
+// ---------- EDUCATORE: ATTIVITA ----------
+function attivita(){
+  $('#contenuto').innerHTML = `<div class="card"><h3>Registra attività</h3>
+    ${selBambino()}
+    <select id="sel-tipo">${Object.entries(TIPI).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select>
+    <textarea id="txt-att" rows="2" placeholder="Nota (facoltativa): es. ha mangiato tutto"></textarea>
+    <button class="az" onclick="salvaAttivita()">Salva</button></div>
+    <div class="card"><h3>Oggi</h3><div id="att-oggi"></div></div>`;
+  attOggi();
+}
+async function attOggi(){
+  const { data } = await sb.from('attivita').select('*').gte('orario', oggi()+'T00:00:00').order('orario',{ascending:false}).limit(30);
+  const byId = Object.fromEntries(bambini.map(b=>[b.id,b.nome]));
+  $('#att-oggi').innerHTML = (data||[]).length ? data.map(a=>
+    `<div class="riga"><div>${TIPI[a.tipo]||a.tipo} <b>${esc(byId[a.bambino_id]||'')}</b><br><small>${esc(a.descrizione||'')}</small></div><span class="tag">${ora(a.orario)}</span></div>`
+  ).join('') : '<div class="vuoto">Nessuna attività registrata oggi.</div>';
+}
+async function salvaAttivita(){
+  const { error } = await sb.from('attivita').insert({
+    bambino_id: $('#sel-bimbo').value, tipo: $('#sel-tipo').value,
+    descrizione: $('#txt-att').value.trim() || null, educatore_id: profilo.id });
+  if (error) return toast(error.message);
+  $('#txt-att').value=''; toast('Attività salvata ✔'); attOggi();
+}
+
+// ---------- EDUCATORE: FOTO ----------
+function fotoTab(){
+  $('#contenuto').innerHTML = `<div class="card"><h3>Carica foto</h3>
+    ${selBambino()}
+    <input id="txt-did" placeholder="Didascalia (facoltativa)">
+    <input id="file-foto" type="file" accept="image/*" capture="environment">
+    <button class="az" onclick="caricaFoto()">Carica</button>
+    <p style="font-size:13px;color:#667">Le foto sono private: le vedono solo i genitori del bambino. Il caricamento è bloccato senza consenso foto.</p></div>`;
+}
+function comprimi(file){
+  return new Promise((ok, ko) => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 1280, sc = Math.min(1, MAX/Math.max(img.width, img.height));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.width*sc); cv.height = Math.round(img.height*sc);
+      cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+      cv.toBlob(b => b ? ok(b) : ko(new Error('compressione fallita')), 'image/jpeg', .72);
+    };
+    img.onerror = ko;
+    img.src = URL.createObjectURL(file);
+  });
+}
+async function caricaFoto(){
+  const f = $('#file-foto').files[0];
+  if (!f) return toast('Scegli una foto');
+  const bid = $('#sel-bimbo').value;
+  const b = bambini.find(x=>x.id===bid);
+  if (!b.consenso_foto) return toast('⚠️ Manca il consenso foto per ' + b.nome);
+  toast('Caricamento…');
+  try {
+    const blob = await comprimi(f);
+    const percorso = `${bid}/${Date.now()}.jpg`;
+    const { error: e1 } = await sb.storage.from('foto').upload(percorso, blob, { contentType:'image/jpeg' });
+    if (e1) throw e1;
+    const { error: e2 } = await sb.from('foto').insert({
+      bambino_id:bid, percorso, didascalia:$('#txt-did').value.trim()||null, caricata_da:profilo.id });
+    if (e2) throw e2;
+    $('#file-foto').value=''; $('#txt-did').value='';
+    toast('Foto caricata ✔');
+  } catch(e){ toast('Errore: ' + e.message); }
+}
+
+// ---------- GENITORE: DIARIO ----------
+function diario(){
+  if (!bambini.length){ $('#contenuto').innerHTML = '<div class="card vuoto">Nessun bambino associato al tuo account.<br>Chiedi all\'amministratore della scuola.</div>'; return; }
+  $('#contenuto').innerHTML = `<div class="card">
+    ${selBambino('sel-bimbo')}
+    <input id="sel-data" type="date" value="${oggi()}">
+    <button class="az" onclick="diarioCarica()">Mostra</button></div>
+    <div id="diario-feed"></div>`;
+  $('#sel-bimbo').onchange = diarioCarica; $('#sel-data').onchange = diarioCarica;
+  diarioCarica();
+}
+async function diarioCarica(){
+  const bid = $('#sel-bimbo').value, g = $('#sel-data').value;
+  const [pres, atts, fts] = await Promise.all([
+    sb.from('presenze').select('*').eq('bambino_id',bid).eq('giorno',g),
+    sb.from('attivita').select('*').eq('bambino_id',bid).gte('orario',g+'T00:00:00').lte('orario',g+'T23:59:59').order('orario'),
+    sb.from('foto').select('*').eq('bambino_id',bid).gte('scattata_il',g+'T00:00:00').lte('scattata_il',g+'T23:59:59').order('scattata_il')
+  ]);
+  const p = (pres.data||[])[0];
+  let html = `<div class="card"><h3>Presenza</h3>${
+    p && p.entrata ? `Entrata alle <b>${ora(p.entrata)}</b>${p.uscita?` · Uscita alle <b>${ora(p.uscita)}</b>`:' · ancora a scuola'}` : 'Nessuna presenza registrata.'
+  }</div>`;
+  html += `<div class="card"><h3>Attività</h3>${
+    (atts.data||[]).length ? atts.data.map(a=>`<div class="riga"><div>${TIPI[a.tipo]||a.tipo}<br><small>${esc(a.descrizione||'')}</small></div><span class="tag">${ora(a.orario)}</span></div>`).join('') : '<div class="vuoto">Nessuna attività.</div>'
+  }</div>`;
+  html += `<div class="card"><h3>Foto</h3><div id="diario-foto">${(fts.data||[]).length?'Caricamento foto…':'<div class="vuoto">Nessuna foto.</div>'}</div></div>`;
+  $('#diario-feed').innerHTML = html;
+  if ((fts.data||[]).length){
+    let out = '';
+    for (const f of fts.data){
+      const { data:s } = await sb.storage.from('foto').createSignedUrl(f.percorso, 3600);
+      if (s) out += `<img class="fotoimg" src="${s.signedUrl}" alt="">${f.didascalia?`<small>${esc(f.didascalia)}</small>`:''}`;
+    }
+    $('#diario-foto').innerHTML = out || '<div class="vuoto">Nessuna foto.</div>';
+  }
+}
+
+// ---------- AVVISI ----------
+async function avvisi(){
+  const staff = profilo.ruolo !== 'genitore';
+  const sez = sezioni.map(s=>`<option value="${s.id}">${esc(s.nome)}</option>`).join('');
+  const form = staff ? `<div class="card"><h3>Nuovo avviso</h3>
+    <input id="av-titolo" placeholder="Titolo">
+    <textarea id="av-testo" rows="3" placeholder="Testo dell'avviso"></textarea>
+    <select id="av-sez"><option value="">📣 Tutta la scuola</option>${sez}</select>
+    <button class="az" onclick="nuovoAvviso()">Pubblica</button></div>` : '';
+  $('#contenuto').innerHTML = form + '<div id="avvisi-lista"></div>';
+  const { data } = await sb.from('avvisi').select('*').order('creato_il',{ascending:false}).limit(30);
+  const bySez = Object.fromEntries(sezioni.map(s=>[s.id,s.nome]));
+  $('#avvisi-lista').innerHTML = (data||[]).length ? data.map(a=>
+    `<div class="card"><span class="tag">${a.sezione_id?esc(bySez[a.sezione_id]||'Sezione'):'Tutta la scuola'}</span>
+     <h3>${esc(a.titolo)}</h3><p>${esc(a.testo)}</p>
+     <small style="color:#889">${new Date(a.creato_il).toLocaleDateString('it-IT')} ${ora(a.creato_il)}</small></div>`
+  ).join('') : '<div class="card vuoto">Nessun avviso.</div>';
+  // conferma di lettura
+  for (const a of (data||[])) await sb.from('avvisi_letture').upsert({ avviso_id:a.id, utente_id:profilo.id }, { onConflict:'avviso_id,utente_id' });
+}
+async function nuovoAvviso(){
+  const { error } = await sb.from('avvisi').insert({
+    titolo:$('#av-titolo').value.trim(), testo:$('#av-testo').value.trim(),
+    sezione_id:$('#av-sez').value||null, creato_da:profilo.id });
+  error ? toast(error.message) : (toast('Avviso pubblicato ✔'), avvisi());
+}
+
+// ---------- MESSAGGI ----------
+async function messaggi(){
+  const staff = profilo.ruolo !== 'genitore';
+  const q = staff ? sb.from('profiles').select('*').neq('id',profilo.id)
+                  : sb.from('profiles').select('*').in('ruolo',['educatore','amministratore']);
+  const { data: contatti } = await q.order('nome');
+  if (!contatto){
+    $('#contenuto').innerHTML = `<div class="card"><h3>Scrivi a…</h3>${
+      (contatti||[]).length ? contatti.map(c=>`<div class="riga"><div><b>${esc(c.nome)}</b><br><small>${c.ruolo}</small></div>
+        <button class="mini" onclick="apriChat('${c.id}','${esc(c.nome)}')">Apri</button></div>`).join('') : '<div class="vuoto">Nessun contatto.</div>'
+    }</div>`;
+    return;
+  }
+}
+async function apriChat(id, nome){
+  contatto = { id, nome };
+  $('#contenuto').innerHTML = `<div class="card"><h3>💬 ${esc(nome)} <button class="mini" style="float:right" onclick="vai('messaggi')">← Indietro</button></h3>
+    <div id="chat-msg" style="max-height:50vh;overflow-y:auto"></div>
+    <textarea id="chat-testo" rows="2" placeholder="Scrivi un messaggio…"></textarea>
+    <button class="az" onclick="inviaMsg()">Invia</button></div>`;
+  await caricaChat();
+}
+async function caricaChat(){
+  const { data } = await sb.from('messaggi').select('*')
+    .or(`and(mittente_id.eq.${profilo.id},destinatario_id.eq.${contatto.id}),and(mittente_id.eq.${contatto.id},destinatario_id.eq.${profilo.id})`)
+    .order('inviato_il');
+  $('#chat-msg').innerHTML = (data||[]).map(m=>
+    `<div class="msg ${m.mittente_id===profilo.id?'mio':'suo'}">${esc(m.testo)}
+     <small>${ora(m.inviato_il)}${m.mittente_id===profilo.id ? (m.letto_il?' · Letto ✓✓':' · Inviato ✓') : ''}</small></div>`
+  ).join('') || '<div class="vuoto">Nessun messaggio. Scrivi il primo!</div>';
+  const box = $('#chat-msg'); box.scrollTop = box.scrollHeight;
+  await sb.from('messaggi').update({ letto_il:new Date().toISOString() })
+    .eq('destinatario_id',profilo.id).eq('mittente_id',contatto.id).is('letto_il',null);
+}
+async function inviaMsg(){
+  const t = $('#chat-testo').value.trim();
+  if (!t) return;
+  const { error } = await sb.from('messaggi').insert({ mittente_id:profilo.id, destinatario_id:contatto.id, testo:t });
+  if (error) return toast(error.message);
+  $('#chat-testo').value=''; caricaChat();
+}
+
+// ---------- ADMIN: GESTIONE ----------
+function gestione(){
+  const sez = sezioni.map(s=>`<option value="${s.id}">${esc(s.nome)}</option>`).join('');
+  $('#contenuto').innerHTML = `
+  <div class="card"><h3>Nuova sezione</h3>
+    <input id="g-sez" placeholder="Nome sezione (es. Coccinelle)">
+    <button class="az" onclick="addSezione()">Crea sezione</button></div>
+  <div class="card"><h3>Nuovo bambino</h3>
+    <input id="g-bnome" placeholder="Nome e cognome">
+    <input id="g-bnascita" type="date">
+    <select id="g-bsez">${sez||'<option value="">Prima crea una sezione</option>'}</select>
+    <label style="font-size:14px"><input type="checkbox" id="g-bconsenso" style="width:auto"> Consenso foto firmato dai genitori</label>
+    <button class="az" onclick="addBambino()">Aggiungi bambino</button></div>
+  <div class="card"><h3>Associa genitore a bambino</h3>
+    <p style="font-size:13px;color:#667">Il genitore deve prima registrarsi nell'app con la sua email.</p>
+    ${selBambino('g-lbimbo')}
+    <input id="g-lemail" type="email" placeholder="Email del genitore">
+    <button class="az" onclick="linkGenitore()">Associa</button></div>
+  <div class="card"><h3>Cambia ruolo utente</h3>
+    <input id="g-remail" type="email" placeholder="Email utente">
+    <select id="g-rruolo"><option value="genitore">Genitore</option><option value="educatore">Educatore</option><option value="amministratore">Amministratore</option></select>
+    <button class="az" onclick="setRuolo()">Aggiorna ruolo</button></div>`;
+}
+async function addSezione(){
+  const { error } = await sb.from('sezioni').insert({ nome:$('#g-sez').value.trim() });
+  if (error) return toast(error.message);
+  sezioni = (await sb.from('sezioni').select('*').order('nome')).data || [];
+  toast('Sezione creata ✔'); gestione();
+}
+async function addBambino(){
+  const { error } = await sb.from('bambini').insert({
+    nome:$('#g-bnome').value.trim(), data_nascita:$('#g-bnascita').value||null,
+    sezione_id:$('#g-bsez').value||null, consenso_foto:$('#g-bconsenso').checked });
+  if (error) return toast(error.message);
+  bambini = (await sb.from('bambini').select('*').order('nome')).data || [];
+  toast('Bambino aggiunto ✔'); gestione();
+}
+async function linkGenitore(){
+  const email = $('#g-lemail').value.trim().toLowerCase();
+  const { data: p } = await sb.from('profiles').select('id').eq('email',email).maybeSingle();
+  if (!p) return toast('Nessun utente registrato con questa email.');
+  const { error } = await sb.from('bambino_genitore').insert({ bambino_id:$('#g-lbimbo').value, genitore_id:p.id });
+  error ? toast(error.message) : toast('Genitore associato ✔');
+}
+async function setRuolo(){
+  const email = $('#g-remail').value.trim().toLowerCase();
+  const { data, error } = await sb.from('profiles').update({ ruolo:$('#g-rruolo').value }).eq('email',email).select();
+  if (error) return toast(error.message);
+  (data||[]).length ? toast('Ruolo aggiornato ✔') : toast('Nessun utente con questa email.');
+}
+
+init();
+</script>
+</body>
+</html>
