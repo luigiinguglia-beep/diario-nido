@@ -20,6 +20,7 @@
   button.az { background:var(--blu); color:#fff; border:0; padding:10px 14px; border-radius:8px; width:100%; }
   button.mini { width:auto; padding:8px 12px; margin:2px; border-radius:8px; border:1px solid #ccd; background:#fff; }
   button.mini.on { background:#2e9e5b; color:#fff; border-color:#2e9e5b; }
+  button.mini.rosso { background:#c94b4b; color:#fff; border-color:#c94b4b; }
   nav { position:fixed; bottom:0; left:0; right:0; background:#fff; border-top:1px solid #ddd; display:flex; }
   nav button { flex:1; border:0; background:none; padding:10px 2px; font-size:12px; color:#667; }
   nav button.attivo { color:var(--blu); font-weight:700; }
@@ -49,6 +50,7 @@ let profilo = null, tab = null, sezioni = [], bambini = [], contatto = null;
 const $ = s => document.querySelector(s);
 const esc = t => (t||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ora = ts => ts ? new Date(ts).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}) : '—';
+const dataIt = ts => ts ? new Date(ts).toLocaleDateString('it-IT') : '';
 const oggi = () => new Date().toISOString().slice(0,10);
 const TIPI = { pasto:'🍽️ Pasto', sonno:'😴 Sonno', cambio:'🧷 Cambio', gioco:'🧸 Gioco', nota:'📝 Nota' };
 function toast(t){ const a=$('#avviso-app'); a.textContent=t; a.style.display='block'; setTimeout(()=>a.style.display='none',3500); }
@@ -206,7 +208,27 @@ function fotoTab(){
     <input id="txt-did" placeholder="Didascalia (facoltativa)">
     <input id="file-foto" type="file" accept="image/*" capture="environment">
     <button class="az" onclick="caricaFoto()">Carica</button>
-    <p style="font-size:13px;color:#667">Le foto sono private: le vedono solo i genitori del bambino. Il caricamento è bloccato senza consenso foto.</p></div>`;
+    <p style="font-size:13px;color:#667">Le foto sono private: le vedono solo i genitori del bambino. Il caricamento è bloccato senza consenso foto.</p></div>
+    <div class="card"><h3>Ultime foto caricate</h3><div id="foto-lista"></div></div>`;
+  fotoLista();
+}
+async function fotoLista(){
+  const { data } = await sb.from('foto').select('*').order('scattata_il',{ascending:false}).limit(20);
+  const byId = Object.fromEntries(bambini.map(b=>[b.id,b.nome]));
+  $('#foto-lista').innerHTML = (data||[]).length ? data.map(f=>
+    `<div class="riga"><div><b>${esc(byId[f.bambino_id]||'')}</b><br>
+      <small>${dataIt(f.scattata_il)} ${ora(f.scattata_il)}${f.didascalia?' · '+esc(f.didascalia):''}</small></div>
+      <button class="mini rosso" onclick="eliminaFoto('${f.id}','${f.percorso}')">Elimina</button></div>`
+  ).join('') : '<div class="vuoto">Nessuna foto caricata.</div>';
+}
+async function eliminaFoto(id, percorso){
+  if (!confirm('Eliminare definitivamente questa foto?')) return;
+  const { error: e1 } = await sb.storage.from('foto').remove([percorso]);
+  if (e1) return toast('Errore: ' + e1.message);
+  const { error: e2 } = await sb.from('foto').delete().eq('id', id);
+  if (e2) return toast('Errore: ' + e2.message);
+  toast('Foto eliminata ✔');
+  if (tab === 'fotoTab') fotoLista();
 }
 function comprimi(file){
   return new Promise((ok, ko) => {
@@ -239,6 +261,7 @@ async function caricaFoto(){
     if (e2) throw e2;
     $('#file-foto').value=''; $('#txt-did').value='';
     toast('Foto caricata ✔');
+    fotoLista();
   } catch(e){ toast('Errore: ' + e.message); }
 }
 
@@ -369,7 +392,11 @@ function gestione(){
   <div class="card"><h3>Cambia ruolo utente</h3>
     <input id="g-remail" type="email" placeholder="Email utente">
     <select id="g-rruolo"><option value="genitore">Genitore</option><option value="educatore">Educatore</option><option value="amministratore">Amministratore</option></select>
-    <button class="az" onclick="setRuolo()">Aggiorna ruolo</button></div>`;
+    <button class="az" onclick="setRuolo()">Aggiorna ruolo</button></div>
+  <div class="card"><h3>Pulizia foto vecchie</h3>
+    <p style="font-size:13px;color:#667">Elimina in blocco le foto più vecchie del numero di giorni indicato. Utile per liberare spazio (es. a fine anno scolastico). L'eliminazione è definitiva.</p>
+    <input id="g-gg" type="number" min="1" value="90" placeholder="Giorni">
+    <button class="az" onclick="pulisciFoto()">Elimina foto più vecchie</button></div>`;
 }
 async function addSezione(){
   const { error } = await sb.from('sezioni').insert({ nome:$('#g-sez').value.trim() });
@@ -397,6 +424,22 @@ async function setRuolo(){
   const { data, error } = await sb.from('profiles').update({ ruolo:$('#g-rruolo').value }).eq('email',email).select();
   if (error) return toast(error.message);
   (data||[]).length ? toast('Ruolo aggiornato ✔') : toast('Nessun utente con questa email.');
+}
+async function pulisciFoto(){
+  const gg = parseInt($('#g-gg').value) || 90;
+  const limite = new Date(Date.now() - gg*24*60*60*1000).toISOString();
+  const { data, error } = await sb.from('foto').select('id,percorso').lt('scattata_il', limite);
+  if (error) return toast(error.message);
+  if (!data || !data.length) return toast('Nessuna foto più vecchia di ' + gg + ' giorni.');
+  if (!confirm('Eliminare definitivamente ' + data.length + ' foto più vecchie di ' + gg + ' giorni?')) return;
+  for (let i = 0; i < data.length; i += 100){
+    const fette = data.slice(i, i + 100);
+    const { error: e1 } = await sb.storage.from('foto').remove(fette.map(f=>f.percorso));
+    if (e1) return toast('Errore: ' + e1.message);
+    const { error: e2 } = await sb.from('foto').delete().in('id', fette.map(f=>f.id));
+    if (e2) return toast('Errore: ' + e2.message);
+  }
+  toast('Eliminate ' + data.length + ' foto ✔');
 }
 
 init();
