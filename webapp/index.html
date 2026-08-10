@@ -35,6 +35,12 @@
   .tag { font-size:12px; background:#e8eefb; color:var(--blu); padding:2px 8px; border-radius:10px; }
   #avviso-app { position:fixed; top:10px; left:50%; transform:translateX(-50%); background:#333; color:#fff; padding:10px 16px; border-radius:10px; display:none; z-index:99; max-width:90%; }
   .vuoto { color:#889; text-align:center; padding:14px; }
+  .griglia { display:grid; grid-template-columns:repeat(auto-fill,minmax(155px,1fr)); gap:10px; }
+  .bcard { text-align:center; margin-bottom:0; }
+  .bcard select { font-size:13px; padding:6px; }
+  .bcard small { display:block; color:#667; margin:4px 0; word-break:break-word; }
+  .avatar { width:64px; height:64px; border-radius:50%; background:#e8eefb; margin:0 auto 6px; display:flex; align-items:center; justify-content:center; font-size:28px; overflow:hidden; }
+  .avatar img { width:100%; height:100%; object-fit:cover; }
 </style>
 </head>
 <body>
@@ -59,8 +65,6 @@ function toast(t){ const a=$('#avviso-app'); a.textContent=t; a.style.display='b
 async function init(){
   const { data:{ session } } = await sb.auth.getSession();
   if (!session) return schermataLogin();
-  // Cerco la scheda profilo; se manca (registrazione avvenuta prima della
-  // creazione del database) la ricreo al volo invece di bloccarmi.
   let { data } = await sb.from('profiles').select('*').eq('id', session.user.id).maybeSingle();
   if (!data){
     const nome = (session.user.user_metadata && session.user.user_metadata.nome) || (session.user.email||'').split('@')[0];
@@ -79,7 +83,19 @@ async function init(){
   sezioni = (await sb.from('sezioni').select('*').order('nome')).data || [];
   bambini = (await sb.from('bambini').select('*').order('nome')).data || [];
   tab = staff ? 'presenze' : 'diario';
+  if (staff) pulisciVideoScaduti(); // pulizia automatica video oltre 48 ore
   renderApp();
+}
+
+// Elimina i video più vecchi di 48 ore (eseguito ad ogni apertura da staff)
+async function pulisciVideoScaduti(){
+  try{
+    const limite = new Date(Date.now() - 48*60*60*1000).toISOString();
+    const { data } = await sb.from('foto').select('id,percorso').eq('tipo','video').lt('scattata_il', limite);
+    if (!data || !data.length) return;
+    await sb.storage.from('foto').remove(data.map(f=>f.percorso));
+    await sb.from('foto').delete().in('id', data.map(f=>f.id));
+  }catch(e){ /* silenzioso: ritenterà alla prossima apertura */ }
 }
 
 function schermataLogin(){
@@ -121,9 +137,9 @@ async function logout(){ await sb.auth.signOut(); location.reload(); }
 function renderApp(){
   const staff = profilo.ruolo !== 'genitore';
   const tabs = staff
-    ? [['presenze','✅','Presenze'],['attivita','🧸','Attività'],['fotoTab','📷','Foto'],['avvisi','📣','Avvisi'],['messaggi','💬','Messaggi']]
+    ? [['presenze','✅','Presenze'],['attivita','🧸','Attività'],['fotoTab','📷','Media'],['avvisi','📣','Avvisi'],['messaggi','💬','Messaggi']]
     : [['diario','📖','Diario'],['avvisi','📣','Avvisi'],['messaggi','💬','Messaggi']];
-  if (profilo.ruolo === 'amministratore') tabs.push(['gestione','⚙️','Gestione']);
+  if (profilo.ruolo === 'amministratore'){ tabs.push(['bambiniTab','👶','Bambini']); tabs.push(['gestione','⚙️','Gestione']); }
   $('#app').innerHTML = `
     <header><div><b>Diario Nido</b><small>${esc(profilo.nome)} · ${profilo.ruolo}</small></div>
     <button onclick="logout()">Esci</button></header>
@@ -135,7 +151,7 @@ function vai(t){
   tab = t; contatto = null;
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('attivo'));
   const btn = $('#tab-'+t); if (btn) btn.classList.add('attivo');
-  ({presenze, attivita, fotoTab, avvisi, messaggi, diario, gestione})[t]();
+  ({presenze, attivita, fotoTab, avvisi, messaggi, diario, gestione, bambiniTab})[t]();
 }
 const selBambino = (id='sel-bimbo', lista=bambini) =>
   `<select id="${id}">${lista.map(b=>`<option value="${b.id}">${esc(b.nome)}</option>`).join('')}</select>`;
@@ -201,40 +217,40 @@ async function salvaAttivita(){
   $('#txt-att').value=''; toast('Attività salvata ✔'); attOggi();
 }
 
-// ---------- EDUCATORE: FOTO ----------
+// ---------- EDUCATORE: FOTO E VIDEO ----------
 function fotoTab(){
-  $('#contenuto').innerHTML = `<div class="card"><h3>Carica foto</h3>
+  $('#contenuto').innerHTML = `<div class="card"><h3>Carica foto o video</h3>
     ${selBambino()}
     <input id="txt-did" placeholder="Didascalia (facoltativa)">
-    <input id="file-foto" type="file" accept="image/*" capture="environment">
-    <button class="az" onclick="caricaFoto()">Carica</button>
-    <p style="font-size:13px;color:#667">Le foto sono private: le vedono solo i genitori del bambino. Il caricamento è bloccato senza consenso foto.</p></div>
-    <div class="card"><h3>Ultime foto caricate</h3><div id="foto-lista"></div></div>`;
+    <input id="file-foto" type="file" accept="image/*,video/*">
+    <button class="az" onclick="caricaMedia()">Carica</button>
+    <p style="font-size:13px;color:#667">Foto e video sono privati: li vedono solo i genitori del bambino. I video (max 30 MB) si eliminano automaticamente dopo 48 ore. Il caricamento è bloccato senza consenso.</p></div>
+    <div class="card"><h3>Ultimi caricamenti</h3><div id="foto-lista"></div></div>`;
   fotoLista();
 }
 async function fotoLista(){
   const { data } = await sb.from('foto').select('*').order('scattata_il',{ascending:false}).limit(20);
   const byId = Object.fromEntries(bambini.map(b=>[b.id,b.nome]));
   $('#foto-lista').innerHTML = (data||[]).length ? data.map(f=>
-    `<div class="riga"><div><b>${esc(byId[f.bambino_id]||'')}</b><br>
+    `<div class="riga"><div>${f.tipo==='video'?'🎬':'📷'} <b>${esc(byId[f.bambino_id]||'')}</b><br>
       <small>${dataIt(f.scattata_il)} ${ora(f.scattata_il)}${f.didascalia?' · '+esc(f.didascalia):''}</small></div>
       <button class="mini rosso" onclick="eliminaFoto('${f.id}','${f.percorso}')">Elimina</button></div>`
-  ).join('') : '<div class="vuoto">Nessuna foto caricata.</div>';
+  ).join('') : '<div class="vuoto">Nessun caricamento.</div>';
 }
 async function eliminaFoto(id, percorso){
-  if (!confirm('Eliminare definitivamente questa foto?')) return;
+  if (!confirm('Eliminare definitivamente questo elemento?')) return;
   const { error: e1 } = await sb.storage.from('foto').remove([percorso]);
   if (e1) return toast('Errore: ' + e1.message);
   const { error: e2 } = await sb.from('foto').delete().eq('id', id);
   if (e2) return toast('Errore: ' + e2.message);
-  toast('Foto eliminata ✔');
+  toast('Eliminato ✔');
   if (tab === 'fotoTab') fotoLista();
 }
-function comprimi(file){
+function comprimi(file, MAX = 1280){
   return new Promise((ok, ko) => {
     const img = new Image();
     img.onload = () => {
-      const MAX = 1280, sc = Math.min(1, MAX/Math.max(img.width, img.height));
+      const sc = Math.min(1, MAX/Math.max(img.width, img.height));
       const cv = document.createElement('canvas');
       cv.width = Math.round(img.width*sc); cv.height = Math.round(img.height*sc);
       cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
@@ -244,23 +260,33 @@ function comprimi(file){
     img.src = URL.createObjectURL(file);
   });
 }
-async function caricaFoto(){
+async function caricaMedia(){
   const f = $('#file-foto').files[0];
-  if (!f) return toast('Scegli una foto');
+  if (!f) return toast('Scegli una foto o un video');
   const bid = $('#sel-bimbo').value;
   const b = bambini.find(x=>x.id===bid);
   if (!b.consenso_foto) return toast('⚠️ Manca il consenso foto per ' + b.nome);
+  const video = f.type.startsWith('video');
+  if (video && f.size > 30*1024*1024) return toast('Video troppo grande: massimo 30 MB');
   toast('Caricamento…');
   try {
-    const blob = await comprimi(f);
-    const percorso = `${bid}/${Date.now()}.jpg`;
-    const { error: e1 } = await sb.storage.from('foto').upload(percorso, blob, { contentType:'image/jpeg' });
+    let blob, percorso, ctype;
+    if (video){
+      blob = f; ctype = f.type || 'video/mp4';
+      const ext = (f.name.split('.').pop()||'mp4').toLowerCase();
+      percorso = `${bid}/${Date.now()}.${ext}`;
+    } else {
+      blob = await comprimi(f); ctype = 'image/jpeg';
+      percorso = `${bid}/${Date.now()}.jpg`;
+    }
+    const { error: e1 } = await sb.storage.from('foto').upload(percorso, blob, { contentType: ctype });
     if (e1) throw e1;
     const { error: e2 } = await sb.from('foto').insert({
-      bambino_id:bid, percorso, didascalia:$('#txt-did').value.trim()||null, caricata_da:profilo.id });
+      bambino_id:bid, percorso, tipo: video?'video':'foto',
+      didascalia:$('#txt-did').value.trim()||null, caricata_da:profilo.id });
     if (e2) throw e2;
     $('#file-foto').value=''; $('#txt-did').value='';
-    toast('Foto caricata ✔');
+    toast(video ? 'Video caricato ✔ (si eliminerà tra 48 ore)' : 'Foto caricata ✔');
     fotoLista();
   } catch(e){ toast('Errore: ' + e.message); }
 }
@@ -290,15 +316,19 @@ async function diarioCarica(){
   html += `<div class="card"><h3>Attività</h3>${
     (atts.data||[]).length ? atts.data.map(a=>`<div class="riga"><div>${TIPI[a.tipo]||a.tipo}<br><small>${esc(a.descrizione||'')}</small></div><span class="tag">${ora(a.orario)}</span></div>`).join('') : '<div class="vuoto">Nessuna attività.</div>'
   }</div>`;
-  html += `<div class="card"><h3>Foto</h3><div id="diario-foto">${(fts.data||[]).length?'Caricamento foto…':'<div class="vuoto">Nessuna foto.</div>'}</div></div>`;
+  html += `<div class="card"><h3>Foto e video</h3><div id="diario-foto">${(fts.data||[]).length?'Caricamento…':'<div class="vuoto">Nessuna foto o video.</div>'}</div></div>`;
   $('#diario-feed').innerHTML = html;
   if ((fts.data||[]).length){
     let out = '';
     for (const f of fts.data){
       const { data:s } = await sb.storage.from('foto').createSignedUrl(f.percorso, 3600);
-      if (s) out += `<img class="fotoimg" src="${s.signedUrl}" alt="">${f.didascalia?`<small>${esc(f.didascalia)}</small>`:''}`;
+      if (!s) continue;
+      out += f.tipo==='video'
+        ? `<video class="fotoimg" src="${s.signedUrl}" controls playsinline preload="metadata"></video>`
+        : `<img class="fotoimg" src="${s.signedUrl}" alt="">`;
+      if (f.didascalia) out += `<small>${esc(f.didascalia)}</small>`;
     }
-    $('#diario-foto').innerHTML = out || '<div class="vuoto">Nessuna foto.</div>';
+    $('#diario-foto').innerHTML = out || '<div class="vuoto">Nessuna foto o video.</div>';
   }
 }
 
@@ -319,7 +349,6 @@ async function avvisi(){
      <h3>${esc(a.titolo)}</h3><p>${esc(a.testo)}</p>
      <small style="color:#889">${new Date(a.creato_il).toLocaleDateString('it-IT')} ${ora(a.creato_il)}</small></div>`
   ).join('') : '<div class="card vuoto">Nessun avviso.</div>';
-  // conferma di lettura
   for (const a of (data||[])) await sb.from('avvisi_letture').upsert({ avviso_id:a.id, utente_id:profilo.id }, { onConflict:'avviso_id,utente_id' });
 }
 async function nuovoAvviso(){
@@ -371,6 +400,74 @@ async function inviaMsg(){
   $('#chat-testo').value=''; caricaChat();
 }
 
+// ---------- ADMIN: BAMBINI (riepilogo a mosaico) ----------
+async function bambiniTab(){
+  const [assocRes, profRes] = await Promise.all([
+    sb.from('bambino_genitore').select('*'),
+    sb.from('profiles').select('id,nome,email')
+  ]);
+  const byProf = Object.fromEntries((profRes.data||[]).map(p=>[p.id,p]));
+  const genDi = {};
+  (assocRes.data||[]).forEach(a=>{ (genDi[a.bambino_id] = genDi[a.bambino_id]||[]).push(byProf[a.genitore_id]); });
+  const bySez = Object.fromEntries(sezioni.map(s=>[s.id,s.nome]));
+  const sezOpt = sid => `<option value="">— Nessuna sezione —</option>` +
+    sezioni.map(s=>`<option value="${s.id}" ${s.id===sid?'selected':''}>${esc(s.nome)}</option>`).join('');
+  $('#contenuto').innerHTML = `<div class="card"><h3>Tutti i bambini (${bambini.length})</h3>
+    <p style="font-size:13px;color:#667;margin:0">Cambia sezione direttamente dal menu di ogni scheda. La foto è facoltativa.</p></div>
+    <div class="griglia">` + (bambini.length ? bambini.map(b=>`
+    <div class="card bcard">
+      <div class="avatar" id="av-${b.id}">👶</div>
+      <b>${esc(b.nome)}</b>
+      <small>${b.data_nascita ? 'Nato/a il ' + dataIt(b.data_nascita) : ''}</small>
+      <select onchange="cambiaSezione('${b.id}', this.value)">${sezOpt(b.sezione_id)}</select>
+      <small>${(genDi[b.id]||[]).filter(Boolean).map(g=>'👤 '+esc(g.nome)+'<br>'+esc(g.email)).join('<br>') || 'Nessun genitore associato'}</small>
+      <input type="file" accept="image/*" id="avf-${b.id}" style="display:none" onchange="caricaAvatar('${b.id}')">
+      <div style="display:flex;gap:4px;justify-content:center;flex-wrap:wrap">
+        <button class="mini" onclick="document.getElementById('avf-${b.id}').click()">📷 Foto</button>
+        <button class="mini rosso" onclick="eliminaBambino('${b.id}')">Elimina</button>
+      </div>
+    </div>`).join('') : '<div class="vuoto">Nessun bambino.</div>') + `</div>`;
+  for (const b of bambini){
+    if (!b.foto_profilo) continue;
+    const { data:s } = await sb.storage.from('foto').createSignedUrl(b.foto_profilo, 3600);
+    const el = document.getElementById('av-'+b.id);
+    if (s && el) el.innerHTML = `<img src="${s.signedUrl}" alt="">`;
+  }
+}
+async function cambiaSezione(bid, sid){
+  const { error } = await sb.from('bambini').update({ sezione_id: sid || null }).eq('id', bid);
+  if (error) return toast(error.message);
+  const b = bambini.find(x=>x.id===bid); if (b) b.sezione_id = sid || null;
+  toast('Sezione aggiornata ✔');
+}
+async function caricaAvatar(bid){
+  const inp = document.getElementById('avf-'+bid);
+  const f = inp.files[0]; if (!f) return;
+  toast('Caricamento…');
+  try{
+    const blob = await comprimi(f, 400);
+    const percorso = `${bid}/profilo.jpg`;
+    const { error: e1 } = await sb.storage.from('foto').upload(percorso, blob, { contentType:'image/jpeg', upsert:true });
+    if (e1) throw e1;
+    const { error: e2 } = await sb.from('bambini').update({ foto_profilo: percorso }).eq('id', bid);
+    if (e2) throw e2;
+    const b = bambini.find(x=>x.id===bid); if (b) b.foto_profilo = percorso;
+    toast('Foto profilo aggiornata ✔'); bambiniTab();
+  }catch(e){ toast('Errore: ' + e.message); }
+}
+async function eliminaBambino(bid){
+  const b = bambini.find(x=>x.id===bid);
+  if (!confirm('Eliminare definitivamente ' + (b ? b.nome : 'questo bambino') + '?\nVerranno cancellati anche presenze, diario, foto e video. L\'operazione non si pu\u00f2 annullare.')) return;
+  try{
+    const { data: files } = await sb.storage.from('foto').list(bid, { limit: 1000 });
+    if (files && files.length) await sb.storage.from('foto').remove(files.map(f=>bid+'/'+f.name));
+    const { error } = await sb.from('bambini').delete().eq('id', bid);
+    if (error) throw error;
+    bambini = bambini.filter(x=>x.id!==bid);
+    toast('Bambino eliminato ✔'); bambiniTab();
+  }catch(e){ toast('Errore: ' + e.message); }
+}
+
 // ---------- ADMIN: GESTIONE ----------
 function gestione(){
   const sez = sezioni.map(s=>`<option value="${s.id}">${esc(s.nome)}</option>`).join('');
@@ -394,7 +491,7 @@ function gestione(){
     <select id="g-rruolo"><option value="genitore">Genitore</option><option value="educatore">Educatore</option><option value="amministratore">Amministratore</option></select>
     <button class="az" onclick="setRuolo()">Aggiorna ruolo</button></div>
   <div class="card"><h3>Pulizia foto vecchie</h3>
-    <p style="font-size:13px;color:#667">Elimina in blocco le foto più vecchie del numero di giorni indicato. Utile per liberare spazio (es. a fine anno scolastico). L'eliminazione è definitiva.</p>
+    <p style="font-size:13px;color:#667">Elimina in blocco le foto più vecchie del numero di giorni indicato. Utile per liberare spazio (es. a fine anno scolastico). L'eliminazione è definitiva. I video si eliminano già da soli dopo 48 ore.</p>
     <input id="g-gg" type="number" min="1" value="90" placeholder="Giorni">
     <button class="az" onclick="pulisciFoto()">Elimina foto più vecchie</button></div>`;
 }
@@ -428,7 +525,7 @@ async function setRuolo(){
 async function pulisciFoto(){
   const gg = parseInt($('#g-gg').value) || 90;
   const limite = new Date(Date.now() - gg*24*60*60*1000).toISOString();
-  const { data, error } = await sb.from('foto').select('id,percorso').lt('scattata_il', limite);
+  const { data, error } = await sb.from('foto').select('id,percorso').eq('tipo','foto').lt('scattata_il', limite);
   if (error) return toast(error.message);
   if (!data || !data.length) return toast('Nessuna foto più vecchia di ' + gg + ' giorni.');
   if (!confirm('Eliminare definitivamente ' + data.length + ' foto più vecchie di ' + gg + ' giorni?')) return;
