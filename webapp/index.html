@@ -21,6 +21,8 @@
   button.mini { width:auto; padding:8px 12px; margin:2px; border-radius:8px; border:1px solid #ccd; background:#fff; }
   button.mini.on { background:#2e9e5b; color:#fff; border-color:#2e9e5b; }
   button.mini.rosso { background:#c94b4b; color:#fff; border-color:#c94b4b; }
+  label.chk { display:flex; align-items:center; gap:8px; font-size:14px; color:#445; margin:0 0 10px; }
+  label.chk input { width:auto; margin:0; }
   nav { position:fixed; bottom:0; left:0; right:0; background:#fff; border-top:1px solid #ddd; display:flex; }
   nav button { flex:1; border:0; background:none; padding:10px 2px; font-size:12px; color:#667; }
   nav button.attivo { color:var(--blu); font-weight:700; }
@@ -60,6 +62,7 @@ const dataIt = ts => ts ? new Date(ts).toLocaleDateString('it-IT') : '';
 const oggi = () => new Date().toISOString().slice(0,10);
 const TIPI = { pasto:'🍽️ Pasto', sonno:'😴 Sonno', cambio:'🧷 Cambio', gioco:'🧸 Gioco', nota:'📝 Nota' };
 function toast(t){ const a=$('#avviso-app'); a.textContent=t; a.style.display='block'; setTimeout(()=>a.style.display='none',3500); }
+function mostraPass(chk, id){ document.getElementById(id).type = chk.checked ? 'text' : 'password'; }
 
 // ---------- AVVIO ----------
 async function init(){
@@ -106,6 +109,7 @@ function schermataLogin(){
       <h3>Accedi</h3>
       <input id="l-email" type="email" placeholder="Email">
       <input id="l-pass" type="password" placeholder="Password">
+      <label class="chk"><input type="checkbox" onchange="mostraPass(this,'l-pass')"> Mostra password</label>
       <button class="az" onclick="login()">Entra</button>
     </div>
     <div class="card">
@@ -113,6 +117,7 @@ function schermataLogin(){
       <input id="r-nome" placeholder="Nome e cognome">
       <input id="r-email" type="email" placeholder="Email">
       <input id="r-pass" type="password" placeholder="Password (min 6 caratteri)">
+      <label class="chk"><input type="checkbox" onchange="mostraPass(this,'r-pass')"> Mostra password</label>
       <button class="az" onclick="registra()">Crea account</button>
       <p style="font-size:13px;color:#667">Dopo la registrazione l'amministratore ti assocerà ai tuoi bambini.</p>
     </div>
@@ -128,7 +133,12 @@ async function registra(){
     email: $('#r-email').value.trim(), password: $('#r-pass').value,
     options: { data: { nome: $('#r-nome').value.trim() } }
   });
-  if (error) return toast('Errore: ' + error.message);
+  if (error){
+    const m = (error.message||'').toLowerCase();
+    if (m.includes('already registered') || m.includes('already been registered') || m.includes('already exists'))
+      return toast('Esiste gi\u00e0 un account con questa email: usa "Accedi" qui sopra.');
+    return toast('Errore: ' + error.message);
+  }
   toast('Account creato! Se richiesto, conferma l\'email, poi accedi.');
 }
 async function logout(){ await sb.auth.signOut(); location.reload(); }
